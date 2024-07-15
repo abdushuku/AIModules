@@ -19,10 +19,6 @@ app.post('/voice', (req, res) => {
         speechTimeout: 'auto'
     });
     gather.say('Hello! How can I assist you today? Please say something.');
-    twiml.record({
-        transcribe: true,
-        // transcribeCallback: '/handle-transcription'
-    });
     res.type('text/xml');
     res.send(twiml.toString());
 });
