@@ -1,21 +1,18 @@
 {
   "name": "mohirai",
   "version": "1.0.0",
-  "main": "aiModule.js",
+  "main": "server.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "nodemon aiModule.js"
+    "start": "nodemon server.js"
   },
-  "keywords": [],
   "author": "",
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "body-parser": "^1.20.2",
-    "dotenv": "^16.4.5",
+    "axios": "^1.7.2",
     "express": "^4.19.2",
-    "nodemon": "^3.1.4",
-    "openai": "^4.52.3",
-    "twilio": "^5.2.2"
+    "form-data": "^4.0.0",
+    "nodemon": "^3.1.4"
   }
 }
