@@ -1,7 +1,6 @@
 const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
-const FormData = require('form-data');
 const { VoiceResponse } = require('twilio').twiml;
 const OpenAi = require('openai');
 require('dotenv').config();
@@ -18,79 +17,110 @@ const openai = new OpenAi({
     project: 'proj_gazEt56784FLC9QEgvOzN3jN'
 });
 
+// Retry mechanism with exponential backoff
+async function retryRequest(config, retries = 5, backoff = 300) {
+    try {
+        const response = await axios(config);
+        return response;
+    } catch (error) {
+        if (error.response && error.response.status === 429 && retries > 0) {
+            console.warn(`Rate limit hit, retrying in ${backoff}ms...`);
+            await new Promise(resolve => setTimeout(resolve, backoff));
+            return retryRequest(config, retries - 1, backoff * 2);
+        } else {
+            throw error;
+        }
+    }
+}
+
+// Example usage of retryRequest
+async function getGPTResponse(userMessage) {
+    const config = {
+        method: 'post',
+        url: 'https://api.openai.com/v1/chat/completions',
+        headers: {
+            Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+            'Content-Type': 'application/json'
+        },
+        data: {
+            model: 'gpt-3.5-turbo',
+            messages: [{ role: 'user', content: userMessage }]
+        }
+    };
+
+    try {
+        const response = await retryRequest(config);
+        return response.data.choices[0].message.content;
+    } catch (error) {
+        console.error('Error getting GPT response:', error);
+        throw error;
+    }
+}
+
 // Route to handle incoming calls
 app.post('/voice', (req, res) => {
     const twiml = new VoiceResponse();
     twiml.say('Hello, how can I assist you today?');
-    twiml.record({
-        action: '/handle-recording-complete',
-        recordingStatusCallback: '/handle-recording-status',
-        recordingStatusCallbackMethod: 'POST'
+
+    const gather = twiml.gather({
+        input: 'speech',
+        action: '/handle-gather-complete',
+        speechTimeout: 'auto',
+        speechModel: 'phone_call',
+        language: 'uz-UZ'
     });
+
+    gather.say('Please say something and I will assist you.');
     res.type('text/xml');
     res.send(twiml.toString());
 });
 
-// Route to handle the recording status callback
-app.post('/handle-recording-status', (req, res) => {
-    const recordingUrl = req.body.RecordingUrl;
-    console.log('Recording URL:', recordingUrl);
-    console.log('Recording Status:', req.body.RecordingStatus);
-    res.sendStatus(200);
-});
+// Route to handle the gather completion
+app.post('/handle-gather-complete', async (req, res) => {
+    const userMessage = req.body.SpeechResult;
 
-// Route to handle the recording completion and send to STT module
-app.post('/handle-recording-complete', async (req, res) => {
-    const recordingUrl = req.body.RecordingUrl;
-
-    if (!recordingUrl) {
-        console.error('No recording URL provided');
+    if (!userMessage) {
+        console.error('No speech input provided');
         const response = new VoiceResponse();
-        response.say('Sorry, something went wrong. Please try again later.');
+        response.say('Sorry, I did not get that. Please try again.');
+        const gather = response.gather({
+            input: 'speech',
+            action: '/handle-gather-complete',
+            speechTimeout: 'auto',
+            speechModel: 'phone_call',
+            language: 'uz-UZ'
+        });
+        gather.say('Please say something and I will assist you.');
         res.type('text/xml');
         res.send(response.toString());
         return;
     }
 
     try {
-        const recordingResponse = await axios.get(recordingUrl, {
-            auth: {
-                username: process.env.AUTH_SID,
-                password: process.env.AUTH_TOKEN
-            },
-            responseType: 'stream'
-        });
+        // Get the GPT response
+        const gptText = await getGPTResponse(userMessage);
+        const ttsresponse = await ttsResponse(gptText);
 
-        const data = new FormData();
-        data.append('file', recordingResponse.data, 'recording.wav');
-        data.append('return_offsets', 'false');
-        data.append('run_diarization', 'false');
-        data.append('language', 'uz');
-        data.append('blocking', 'false');
-
-        const sttResponse = await sttResponse(data);
-
-        const userMessage = sttResponse.data.transcription;
-        console.log(userMessage);
-
-        // Send the transcribed text to the GPT model API
-        const gptResponse = await openai.chat.completions.create({
-            model: 'gpt-4-turbo',
-            messages: [{ role: 'user', content: userMessage }],
-        });
-
-        const gptText = gptResponse.data.choices[0].message.content;
-        const ttsResponse = await ttsResponse(gptText);
-
-        const audioUrl = ttsResponse.data.audioUrl;
+        const audioUrl = ttsresponse.data.audioUrl;
 
         // Respond to Twilio with the generated speech
         const response = new VoiceResponse();
         response.play(audioUrl);
+
+        // Continue the conversation
+        const gather = response.gather({
+            input: 'speech',
+            action: '/handle-gather-complete',
+            speechTimeout: 'auto',
+            speechModel: 'phone_call',
+            language: 'uz-UZ'
+        });
+        gather.say('Please say something and I will assist you.');
+
         res.type('text/xml');
         res.send(response.toString());
     } catch (error) {
-        console.error('Error handling the recording completion:', error);
+        console.error('Error handling the gather completion:', error);
         const response = new VoiceResponse();
         response.say('Sorry, something went wrong. Please try again later.');
         res.type('text/xml');
@@ -113,29 +143,6 @@ function ttsConfig(gptText) {
             blocking: 'true',
         }
     };
-}
-
-// Define the STT config
-function sttConfig(formData) {
-    return {
-        method: 'post',
-        url: process.env.MOHIRAI_STT,
-        headers: {
-            Authorization: `${process.env.MOHIRAI_API_KEY}`,
-            ...formData.getHeaders(),
-        },
-        data: formData
-    };
-}
-
-async function sttResponse(formData) {
-    try {
-        const response = await axios(sttConfig(formData));
-        return response;
-    } catch (error) {
-        console.error(`STT Service Error: ${error.message}`);
-        throw error;
-    }
 }
 
 async function ttsResponse(gptText) {
