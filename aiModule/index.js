@@ -1,21 +1,28 @@
-const express = require('express');
-const bodyParser = require('body-parser');
-const axios = require('axios');
-const { VoiceResponse } = require('twilio').twiml;
-const OpenAi = require('openai');
-require('dotenv').config();
+import express from "express";
+import bodyParser from "body-parser";
+import axios from "axios";
+import { Configuration, OpenAIApi } from "openai";
+import { VoiceResponse } from "twilio";
+import dotenv from 'dotenv';
+dotenv.config();
+
 
 const app = express();
 const port = 3004;
 
+
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
-const openai = new OpenAi({
-    apiKey: process.env.OPENAI_API_KEY,
+const configuration = new Configuration({
     organization: "org-fCOHiO7g2QLhezgcgNEpkGws",
-    project: 'proj_gazEt56784FLC9QEgvOzN3jN'
-});
+    apiKey: process.env.OPENAI_API_KEY
+})
+const openai = new OpenAIApi(configuration);
+
+console.log('OpenAI API Key:', process.env.OPENAI_API_KEY);
+console.log('MOHIRAI TTS URL:', process.env.MOHIRAI_TTS);
+console.log('MOHIRAI API Key:', process.env.MOHIRAI_API_KEY);
 
 // Retry mechanism with exponential backoff
 async function retryRequest(config, retries = 5, backoff = 300) {
@@ -28,31 +35,66 @@ async function retryRequest(config, retries = 5, backoff = 300) {
             await new Promise(resolve => setTimeout(resolve, backoff));
             return retryRequest(config, retries - 1, backoff * 2);
         } else {
+            console.error('Request failed:', error);
             throw error;
         }
     }
 }
 
 // Example usage of retryRequest
-async function getGPTResponse(userMessage) {
-    const config = {
+// async function getGPTResponse(userMessage) {
+//     const config = {
+//         method: 'post',
+//         url: 'https://api.openai.com/v1/chat/completions',
+//         headers: {
+//             Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+//             'Content-Type': 'application/json'
+//         },
+//         data: {
+//             model: 'gpt-3.5-turbo',
+//             messages: [{ role: 'user', content: userMessage }]
+//         }
+//     };
+
+//     try {
+//         const response = await retryRequest(config);
+//         return response.data.choices[0].message.content;
+//     } catch (error) {
+//         console.error('Error getting GPT response:', error);
+//         throw error;
+//     }
+// }
+
+
+const gptResponse = await openai.chat.completions.create({
+    model: 'gpt-4-turbo',
+    messages: [{ role: 'user', content: userMessage }],
+});
+
+
+// Define the TTS config
+function ttsConfig(gptText) {
+    return {
         method: 'post',
-        url: 'https://api.openai.com/v1/chat/completions',
+        url: process.env.MOHIRAI_TTS,
         headers: {
-            Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+            Authorization: `Bearer ${process.env.MOHIRAI_API_KEY}`,
             'Content-Type': 'application/json'
         },
         data: {
-            model: 'gpt-3.5-turbo',
-            messages: [{ role: 'user', content: userMessage }]
+            text: gptText,
+            module: 'davron-neutral',
+            blocking: 'true',
         }
     };
+}
 
+async function ttsResponse(gptText) {
     try {
-        const response = await retryRequest(config);
-        return response.data.choices[0].message.content;
+        const response = await axios(ttsConfig(gptText));
+        return response;
     } catch (error) {
-        console.error('Error getting GPT response:', error);
+        console.error(`TTS Service Error: ${error.message}`);
         throw error;
     }
 }
@@ -98,10 +140,17 @@ app.post('/handle-gather-complete', async (req, res) => {
 
     try {
         // Get the GPT response
-        const gptText = await getGPTResponse(userMessage);
-        const ttsresponse = await ttsResponse(gptText);
+        console.log('User message received:', userMessage);
+        const gptResponse = await openai.chat.completions.create({
+            model: 'gpt-4-turbo',
+            messages: [{ role: 'user', content: userMessage }],
+        });
+        console.log('GPT response:', gptResponse);
+        const ttsresponse = await ttsResponse(gptResponse);
+        console.log('TTS response:', ttsresponse.data);
 
         const audioUrl = ttsresponse.data.audioUrl;
+        console.log('Audio URL:', audioUrl);
 
         // Respond to Twilio with the generated speech
         const response = new VoiceResponse();
@@ -128,34 +177,7 @@ app.post('/handle-gather-complete', async (req, res) => {
     }
 });
 
-// Define the TTS config
-function ttsConfig(gptText) {
-    return {
-        method: 'post',
-        url: process.env.MOHIRAI_TTS,
-        headers: {
-            Authorization: `${process.env.MOHIRAI_API_KEY}`,
-            'Content-Type': 'application/json'
-        },
-        data: {
-            text: gptText,
-            module: 'davron-neutral',
-            blocking: 'true',
-        }
-    };
-}
-
-async function ttsResponse(gptText) {
-    try {
-        const response = await axios(ttsConfig(gptText));
-        return response;
-    } catch (error) {
-        console.error(`TTS Service Error: ${error.message}`);
-        throw error;
-    }
-}
-
 // Start the server
 app.listen(port, () => {
     console.log(`Server is running on port ${port}`);
-});
+})
