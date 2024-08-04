@@ -1,76 +1,44 @@
-import express from "express";
-import bodyParser from "body-parser";
-import axios from "axios";
-import { Configuration, OpenAIApi } from "openai";
-import { VoiceResponse } from "twilio";
+import express from 'express';
+import bodyParser from 'body-parser';
+import axios from 'axios';
+import twilio from 'twilio';
 import dotenv from 'dotenv';
+import rateLimitMiddleware from './middlewares/rateLimet.mjs';
+
 dotenv.config();
 
-
+const { VoiceResponse } = twilio.twiml;
 const app = express();
 const port = 3004;
 
-
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
+app.use(rateLimitMiddleware);
+app.set('trust proxy', 1); // Trust first proxy
 
-const configuration = new Configuration({
-    organization: "org-fCOHiO7g2QLhezgcgNEpkGws",
-    apiKey: process.env.OPENAI_API_KEY
-})
-const openai = new OpenAIApi(configuration);
+// Example usage of axios request
+async function getGPTResponse(userMessage) {
+    const config = {
+        method: 'post',
+        url: 'https://api.openai.com/v1/chat/completions',
+        headers: {
+            Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+            'Content-Type': 'application/json'
+        },
+        data: {
+            model: 'gpt-4o-mini-2024-07-18',
+            messages: [{ role: 'user', content: userMessage }]
+        }
+    };
 
-console.log('OpenAI API Key:', process.env.OPENAI_API_KEY);
-console.log('MOHIRAI TTS URL:', process.env.MOHIRAI_TTS);
-console.log('MOHIRAI API Key:', process.env.MOHIRAI_API_KEY);
-
-// Retry mechanism with exponential backoff
-async function retryRequest(config, retries = 5, backoff = 300) {
     try {
         const response = await axios(config);
-        return response;
+        return response.data.choices[0].message.content;
     } catch (error) {
-        if (error.response && error.response.status === 429 && retries > 0) {
-            console.warn(`Rate limit hit, retrying in ${backoff}ms...`);
-            await new Promise(resolve => setTimeout(resolve, backoff));
-            return retryRequest(config, retries - 1, backoff * 2);
-        } else {
-            console.error('Request failed:', error);
-            throw error;
-        }
+        console.error('Error getting GPT response:', error);
+        throw error;
     }
 }
-
-// Example usage of retryRequest
-// async function getGPTResponse(userMessage) {
-//     const config = {
-//         method: 'post',
-//         url: 'https://api.openai.com/v1/chat/completions',
-//         headers: {
-//             Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-//             'Content-Type': 'application/json'
-//         },
-//         data: {
-//             model: 'gpt-3.5-turbo',
-//             messages: [{ role: 'user', content: userMessage }]
-//         }
-//     };
-
-//     try {
-//         const response = await retryRequest(config);
-//         return response.data.choices[0].message.content;
-//     } catch (error) {
-//         console.error('Error getting GPT response:', error);
-//         throw error;
-//     }
-// }
-
-
-const gptResponse = await openai.chat.completions.create({
-    model: 'gpt-4-turbo',
-    messages: [{ role: 'user', content: userMessage }],
-});
-
 
 // Define the TTS config
 function ttsConfig(gptText) {
@@ -78,7 +46,7 @@ function ttsConfig(gptText) {
         method: 'post',
         url: process.env.MOHIRAI_TTS,
         headers: {
-            Authorization: `Bearer ${process.env.MOHIRAI_API_KEY}`,
+            Authorization: `${process.env.MOHIRAI_API_KEY}`,
             'Content-Type': 'application/json'
         },
         data: {
@@ -140,17 +108,10 @@ app.post('/handle-gather-complete', async (req, res) => {
 
     try {
         // Get the GPT response
-        console.log('User message received:', userMessage);
-        const gptResponse = await openai.chat.completions.create({
-            model: 'gpt-4-turbo',
-            messages: [{ role: 'user', content: userMessage }],
-        });
-        console.log('GPT response:', gptResponse);
-        const ttsresponse = await ttsResponse(gptResponse);
-        console.log('TTS response:', ttsresponse.data);
+        const gptText = await getGPTResponse(userMessage);
+        const ttsresponse = await ttsResponse(gptText);
 
         const audioUrl = ttsresponse.data.audioUrl;
-        console.log('Audio URL:', audioUrl);
 
         // Respond to Twilio with the generated speech
         const response = new VoiceResponse();
@@ -180,4 +141,4 @@ app.post('/handle-gather-complete', async (req, res) => {
 // Start the server
 app.listen(port, () => {
     console.log(`Server is running on port ${port}`);
-})
+});
